@@ -130,6 +130,30 @@ func TestConfigMapList(t *testing.T) {
 	}
 }
 
+func TestConfigMapQuery(t *testing.T) {
+	cfgmaps := newTestFixtureCfgMaps(t, []*rspb.Release{
+		releaseStub("key-1", 1, "default", rspb.StatusUninstalled),
+		releaseStub("key-2", 1, "default", rspb.StatusUninstalled),
+		releaseStub("key-3", 1, "default", rspb.StatusDeployed),
+		releaseStub("key-4", 1, "default", rspb.StatusDeployed),
+		releaseStub("key-5", 1, "default", rspb.StatusSuperseded),
+		releaseStub("key-6", 1, "default", rspb.StatusSuperseded),
+	}...)
+
+	rls, err := cfgmaps.Query(map[string]string{"status": "deployed"})
+	if err != nil {
+		t.Errorf("Failed to query: %s", err)
+	}
+	if len(rls) != 2 {
+		t.Errorf("Expected 2 results, got %d", len(rls))
+	}
+
+	_, err = cfgmaps.Query(map[string]string{"name": "notExist"})
+	if err != ErrReleaseNotFound {
+		t.Errorf("Expected {%v}, got {%v}", ErrReleaseNotFound, err)
+	}
+}
+
 func TestConfigMapCreate(t *testing.T) {
 	cfgmaps := newTestFixtureCfgMaps(t)
 
@@ -182,5 +206,36 @@ func TestConfigMapUpdate(t *testing.T) {
 	// check release has actually been updated by comparing modified fields
 	if rel.Info.Status != got.Info.Status {
 		t.Errorf("Expected status %s, got status %s", rel.Info.Status.String(), got.Info.Status.String())
+	}
+}
+
+func TestConfigMapDelete(t *testing.T) {
+	vers := 1
+	name := "smug-pigeon"
+	namespace := "default"
+	key := testKey(name, vers)
+	rel := releaseStub(name, vers, namespace, rspb.StatusDeployed)
+
+	cfgmaps := newTestFixtureCfgMaps(t, []*rspb.Release{rel}...)
+
+	// perform the delete on a non-existent release
+	_, err := cfgmaps.Delete("nonexistent")
+	if err != ErrReleaseNotFound {
+		t.Fatalf("Expected ErrReleaseNotFound: got {%v}", err)
+	}
+
+	// perform the delete
+	rls, err := cfgmaps.Delete(key)
+	if err != nil {
+		t.Fatalf("Failed to delete release with key %q: %s", key, err)
+	}
+	if !reflect.DeepEqual(rel, rls) {
+		t.Errorf("Expected {%v}, got {%v}", rel, rls)
+	}
+
+	// fetch the deleted release
+	_, err = cfgmaps.Get(key)
+	if !reflect.DeepEqual(ErrReleaseNotFound, err) {
+		t.Errorf("Expected {%v}, got {%v}", ErrReleaseNotFound, err)
 	}
 }

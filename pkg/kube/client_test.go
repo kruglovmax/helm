@@ -147,6 +147,8 @@ func TestUpdate(t *testing.T) {
 				return newResponse(200, &listB.Items[1])
 			case p == "/namespaces/default/pods/squid" && m == "DELETE":
 				return newResponse(200, &listB.Items[1])
+			case p == "/namespaces/default/pods/squid" && m == "GET":
+				return newResponse(200, &listB.Items[2])
 			default:
 				t.Fatalf("unexpected request: %s %s", req.Method, req.URL.Path)
 				return nil, nil
@@ -162,9 +164,21 @@ func TestUpdate(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := c.Update(first, second, false); err != nil {
+	result, err := c.Update(first, second, false)
+	if err != nil {
 		t.Fatal(err)
 	}
+
+	if len(result.Created) != 1 {
+		t.Errorf("expected 1 resource created, got %d", len(result.Created))
+	}
+	if len(result.Updated) != 2 {
+		t.Errorf("expected 2 resource updated, got %d", len(result.Updated))
+	}
+	if len(result.Deleted) != 1 {
+		t.Errorf("expected 1 resource deleted, got %d", len(result.Deleted))
+	}
+
 	// TODO: Find a way to test methods that use Client Set
 	// Test with a wait
 	// if err := c.Update("test", objBody(codec, &listB), objBody(codec, &listC), false, 300, true); err != nil {
@@ -184,11 +198,11 @@ func TestUpdate(t *testing.T) {
 		"/namespaces/default/pods/otter:GET",
 		"/namespaces/default/pods/dolphin:GET",
 		"/namespaces/default/pods:POST",
+		"/namespaces/default/pods/squid:GET",
 		"/namespaces/default/pods/squid:DELETE",
 	}
 	if len(expectedActions) != len(actions) {
-		t.Errorf("unexpected number of requests, expected %d, got %d", len(expectedActions), len(actions))
-		return
+		t.Fatalf("unexpected number of requests, expected %d, got %d", len(expectedActions), len(actions))
 	}
 	for k, v := range expectedActions {
 		if actions[k] != v {

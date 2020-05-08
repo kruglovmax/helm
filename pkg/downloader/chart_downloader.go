@@ -18,7 +18,6 @@ package downloader
 import (
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -26,6 +25,8 @@ import (
 
 	"github.com/pkg/errors"
 
+	"helm.sh/helm/v3/internal/experimental/registry"
+	"helm.sh/helm/v3/internal/fileutil"
 	"helm.sh/helm/v3/internal/urlutil"
 	"helm.sh/helm/v3/pkg/getter"
 	"helm.sh/helm/v3/pkg/helmpath"
@@ -94,14 +95,33 @@ func (c *ChartDownloader) DownloadTo(ref, version, dest string) (string, *proven
 		return "", nil, err
 	}
 
-	data, err := g.Get(u.String(), c.Options...)
+	downloadUrl := u.String()
+	name := filepath.Base(u.Path)
+
+	if _, ok := g.(*registry.Getter); ok {
+		parts := strings.Split(filepath.Base(u.Path), ":")
+
+		if len(parts) == 1 && version == "" {
+			return "", nil, errors.New("no version or tag provided")
+		}
+
+		if len(parts) != 2 {
+			parts = append(parts, version)
+			u.Path = fmt.Sprintf("%s:%s", u.Path, version)
+		}
+
+		downloadUrl = u.String()
+		name = fmt.Sprintf("%s-%s.tgz", parts[0], parts[1])
+	}
+
+	data, err := g.Get(downloadUrl, c.Options...)
+
 	if err != nil {
 		return "", nil, err
 	}
 
-	name := filepath.Base(u.Path)
 	destfile := filepath.Join(dest, name)
-	if err := ioutil.WriteFile(destfile, data.Bytes(), 0644); err != nil {
+	if err := fileutil.AtomicWriteFile(destfile, data, 0644); err != nil {
 		return destfile, nil, err
 	}
 
@@ -117,7 +137,7 @@ func (c *ChartDownloader) DownloadTo(ref, version, dest string) (string, *proven
 			return destfile, ver, nil
 		}
 		provfile := destfile + ".prov"
-		if err := ioutil.WriteFile(provfile, body.Bytes(), 0644); err != nil {
+		if err := fileutil.AtomicWriteFile(provfile, body, 0644); err != nil {
 			return destfile, nil, err
 		}
 
@@ -181,8 +201,10 @@ func (c *ChartDownloader) ResolveChartVersion(ref, version string) (*url.URL, er
 		c.Options = append(
 			c.Options,
 			getter.WithURL(rc.URL),
-			getter.WithTLSClientConfig(rc.CertFile, rc.KeyFile, rc.CAFile),
 		)
+		if rc.CertFile != "" || rc.KeyFile != "" || rc.CAFile != "" {
+			c.Options = append(c.Options, getter.WithTLSClientConfig(rc.CertFile, rc.KeyFile, rc.CAFile))
+		}
 		if rc.Username != "" && rc.Password != "" {
 			c.Options = append(
 				c.Options,
@@ -210,12 +232,14 @@ func (c *ChartDownloader) ResolveChartVersion(ref, version string) (*url.URL, er
 	if err != nil {
 		return u, err
 	}
-	if r != nil && r.Config != nil && r.Config.Username != "" && r.Config.Password != "" {
-		c.Options = append(c.Options, getter.WithBasicAuth(r.Config.Username, r.Config.Password))
-	}
 
-	if r.Config.CertFile != "" || r.Config.KeyFile != "" || r.Config.CAFile != "" {
-		c.Options = append(c.Options, getter.WithTLSClientConfig(r.Config.CertFile, r.Config.KeyFile, r.Config.CAFile))
+	if r != nil && r.Config != nil {
+		if r.Config.CertFile != "" || r.Config.KeyFile != "" || r.Config.CAFile != "" {
+			c.Options = append(c.Options, getter.WithTLSClientConfig(r.Config.CertFile, r.Config.KeyFile, r.Config.CAFile))
+		}
+		if r.Config.Username != "" && r.Config.Password != "" {
+			c.Options = append(c.Options, getter.WithBasicAuth(r.Config.Username, r.Config.Password))
+		}
 	}
 
 	// Next, we need to load the index, and actually look up the chart.
@@ -254,9 +278,6 @@ func (c *ChartDownloader) ResolveChartVersion(ref, version string) (*url.URL, er
 		// TODO add user-agent
 		if _, err := getter.NewHTTPGetter(getter.WithURL(rc.URL)); err != nil {
 			return repoURL, err
-		}
-		if r != nil && r.Config != nil && r.Config.Username != "" && r.Config.Password != "" {
-			c.Options = append(c.Options, getter.WithBasicAuth(r.Config.Username, r.Config.Password))
 		}
 		return u, err
 	}

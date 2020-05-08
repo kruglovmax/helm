@@ -21,6 +21,7 @@ import (
 	"compress/gzip"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
@@ -116,28 +117,50 @@ func Save(c *chart.Chart, outDir string) (string, error) {
 		return "", err
 	}
 
-	// Wrap in gzip writer
-	zipper := gzip.NewWriter(f)
-	zipper.Header.Extra = headerBytes
-	zipper.Header.Comment = "Helm"
-
-	// Wrap in tar writer
-	twriter := tar.NewWriter(zipper)
 	rollback := false
+	// save the chart to the file
+	err = Write(c, f)
+
+	if err != nil {
+		rollback = true
+		return filename, err
+	}
+
 	defer func() {
-		twriter.Close()
-		zipper.Close()
 		f.Close()
 		if rollback {
 			os.Remove(filename)
 		}
 	}()
 
-	if err := writeTarContents(twriter, c, ""); err != nil {
-		rollback = true
-		return filename, err
-	}
 	return filename, nil
+}
+
+// Write streams an archived chart to an io.writer interface.
+//
+// This takes an existing chart and a destination writer.
+func Write(c *chart.Chart, w io.Writer) error {
+	if err := c.Validate(); err != nil {
+		return errors.Wrap(err, "chart validation")
+	}
+
+	// Wrap in gzip writer
+	zipper := gzip.NewWriter(w)
+	zipper.Header.Extra = headerBytes
+	zipper.Header.Comment = "Helm"
+
+	// Wrap in tar writer
+	twriter := tar.NewWriter(zipper)
+	defer func() {
+		twriter.Close()
+		zipper.Close()
+	}()
+
+	if err := writeTarContents(twriter, c, ""); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func writeTarContents(out *tar.Writer, c *chart.Chart, prefix string) error {
@@ -159,6 +182,20 @@ func writeTarContents(out *tar.Writer, c *chart.Chart, prefix string) error {
 	}
 	if err := writeToTar(out, filepath.Join(base, ChartfileName), cdata); err != nil {
 		return err
+	}
+
+	// Save Chart.lock
+	// TODO: remove the APIVersion check when APIVersionV1 is not used anymore
+	if c.Metadata.APIVersion == chart.APIVersionV2 {
+		if c.Lock != nil {
+			ldata, err := yaml.Marshal(c.Lock)
+			if err != nil {
+				return err
+			}
+			if err := writeToTar(out, filepath.Join(base, "Chart.lock"), ldata); err != nil {
+				return err
+			}
+		}
 	}
 
 	// Save values.yaml
@@ -209,7 +246,7 @@ func writeTarContents(out *tar.Writer, c *chart.Chart, prefix string) error {
 func writeToTar(out *tar.Writer, name string, body []byte) error {
 	// TODO: Do we need to create dummy parent directory names if none exist?
 	h := &tar.Header{
-		Name:    name,
+		Name:    filepath.ToSlash(name),
 		Mode:    0644,
 		Size:    int64(len(body)),
 		ModTime: time.Now(),
